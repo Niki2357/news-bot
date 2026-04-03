@@ -1,0 +1,22 @@
+{
+  "_comment": "User preference profile — all keys optional. Edit and commit to workspace/config/.",
+
+  "keyword_boost": {
+    "Claude": 3,
+    "Anthropic": 2,
+    "GPT": 2,
+    "Gemini": 2,
+    "LLM": 1,
+    "agent": 1,
+    "open source": 1
+  },
+
+  "source_boost": {
+  },
+
+  "topic_mute": [
+  ],
+
+  "source_mute": [
+  ]
+}

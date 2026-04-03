@@ -12,6 +12,9 @@ Usage:
 
 import argparse
 import base64
+import os
+import smtplib
+import ssl
 import subprocess
 import sys
 import logging
@@ -69,6 +72,28 @@ def send_via_msmtp(message: str, to_addrs: list) -> bool:
         return False
     except Exception as e:
         logging.error(f"msmtp error: {e}")
+        return False
+
+
+def send_via_smtp(message: str, to_addrs: list) -> bool:
+    """Send via SMTP using SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS env vars."""
+    host = os.getenv("SMTP_HOST")
+    user = os.getenv("SMTP_USER")
+    password = os.getenv("SMTP_PASS")
+    if not (host and user and password):
+        logging.debug("SMTP env vars not set (need SMTP_HOST, SMTP_USER, SMTP_PASS)")
+        return False
+    port = int(os.getenv("SMTP_PORT", "587"))
+    try:
+        context = ssl.create_default_context()
+        with smtplib.SMTP(host, port, timeout=30) as smtp:
+            smtp.ehlo()
+            smtp.starttls(context=context)
+            smtp.login(user, password)
+            smtp.sendmail(user, to_addrs, message.encode("utf-8"))
+        return True
+    except Exception as e:
+        logging.error(f"SMTP send failed: {e}")
         return False
 
 
@@ -133,11 +158,15 @@ Examples:
     
     message = build_message(args.subject, from_addr, to_addrs, args.html, args.attach)
     
-    # Try msmtp first, then sendmail
+    # Try SMTP env vars first, then msmtp, then sendmail
+    if send_via_smtp(message, to_addrs):
+        logging.info("✅ Sent via SMTP")
+        return 0
+
     if send_via_msmtp(message, to_addrs):
         logging.info("✅ Sent via msmtp")
         return 0
-    
+
     if send_via_sendmail(message, to_addrs):
         logging.info("✅ Sent via sendmail")
         return 0

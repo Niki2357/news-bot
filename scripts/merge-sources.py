@@ -325,54 +325,132 @@ def merge_article_sources(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return merged
 
 
-def load_previous_digests(archive_dir: Path, days: int = 14) -> Set[str]:
-    """Load titles from previous digests to avoid repeats.
-    
+def load_previous_digests(archive_dir: Path, days: int = 14) -> Dict[str, Dict[str, str]]:
+    """Load titles from previous digests with their first-seen dates.
+
+    Returns:
+        Dict mapping normalized_title -> {"first_seen_date": str, "orig_title": str}
+
     Args:
         archive_dir: Path to digest archive directory
-        days: Number of days to look back (default: 14, increased from 7)
+        days: Number of days to look back (default: 14)
     """
     if not archive_dir.exists():
-        return set()
-        
-    seen_titles = set()
+        return {}
+
+    # normalized_title -> {first_seen_date, orig_title}
+    # Sort files so older dates are processed first; later entries won't overwrite earlier ones.
+    seen_titles: Dict[str, Dict[str, str]] = {}
     cutoff = datetime.now() - timedelta(days=days)
-    
+
     try:
-        for file_path in archive_dir.glob("*.md"):
-            # Extract date from filename
+        for file_path in sorted(archive_dir.glob("*.md")):
+            date_str = "unknown"
             match = re.search(r'(\d{4}-\d{2}-\d{2})', file_path.name)
             if match:
                 try:
                     file_date = datetime.strptime(match.group(1), "%Y-%m-%d")
                     if file_date < cutoff:
                         continue
+                    date_str = match.group(1)
                 except ValueError:
                     continue
-                    
-            # Extract titles from markdown
+
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                
-            # Simple title extraction (assumes format like "- [Title](link)")
-            for match in re.finditer(r'-\s*\[([^\]]+)\]', content):
-                title = normalize_title(match.group(1))
-                if title:
-                    seen_titles.add(title)
-                    
+
+            for m in re.finditer(r'-\s*\[([^\]]+)\]', content):
+                orig_title = m.group(1)
+                normalized = normalize_title(orig_title)
+                if normalized and normalized not in seen_titles:
+                    seen_titles[normalized] = {
+                        "first_seen_date": date_str,
+                        "orig_title": orig_title,
+                    }
+
     except Exception as e:
         logging.debug(f"Failed to load previous digests: {e}")
-        
+
     logging.info(f"Loaded {len(seen_titles)} titles from previous {days} days")
     return seen_titles
 
 
-def apply_previous_digest_penalty(articles: List[Dict[str, Any]], 
-                                previous_titles: Set[str]) -> List[Dict[str, Any]]:
-    """Apply penalty to articles that appeared in previous digests."""
+def tag_developing_stories(
+    articles: List[Dict[str, Any]],
+    previous_titles: Dict[str, Dict[str, str]],
+    similarity_threshold: float = 0.60,
+) -> List[Dict[str, Any]]:
+    """Tag articles that continue a story from a previous digest.
+
+    Uses the same token-bucket approach as deduplication to avoid O(n*m)
+    SequenceMatcher calls.  Only articles sharing 2+ significant tokens with
+    a previous title are compared with SequenceMatcher.
+
+    Adds ``developing_story`` field:
+        {"first_seen_date": "2026-03-30", "prev_title": "Original headline…"}
+    """
     if not previous_titles:
         return articles
-        
+
+    prev_list = list(previous_titles.items())   # [(norm_title, info), …]
+    prev_titles_text = [p[0] for p in prev_list]
+
+    # Build token -> list of prev_title indices
+    from collections import defaultdict
+    token_to_prev: Dict[str, List[int]] = defaultdict(list)
+    prev_tokens: List[Set[str]] = []
+    for idx, norm_prev in enumerate(prev_titles_text):
+        toks = _extract_tokens(norm_prev)
+        prev_tokens.append(toks)
+        for tok in toks:
+            token_to_prev[tok].append(idx)
+
+    tagged_count = 0
+    for article in articles:
+        if article.get("developing_story") or article.get("in_previous_digest"):
+            continue
+
+        curr_title = article.get("title", "")
+        curr_norm = normalize_title(curr_title)
+        curr_toks = _extract_tokens(curr_norm)
+
+        # Find previous titles sharing 2+ tokens
+        overlap_count: Dict[int, int] = defaultdict(int)
+        for tok in curr_toks:
+            for idx in token_to_prev.get(tok, []):
+                overlap_count[idx] += 1
+
+        for idx, cnt in overlap_count.items():
+            if cnt < 2:
+                continue
+            prev_norm, prev_info = prev_list[idx]
+            if prev_norm == curr_norm:
+                continue  # exact match already handled by penalty
+            sim = calculate_title_similarity(curr_title, prev_info["orig_title"])
+            if sim >= similarity_threshold:
+                article["developing_story"] = {
+                    "first_seen_date": prev_info["first_seen_date"],
+                    "prev_title": prev_info["orig_title"],
+                }
+                tagged_count += 1
+                logging.debug(
+                    f"Developing: '{curr_title[:50]}' ← '{prev_info['orig_title'][:50]}' "
+                    f"({sim:.2f}, {prev_info['first_seen_date']})"
+                )
+                break  # first match is enough
+
+    logging.info(f"Tagged {tagged_count} developing stories from archive")
+    return articles
+
+
+def apply_previous_digest_penalty(
+    articles: List[Dict[str, Any]],
+    previous_titles: Dict[str, Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    """Apply score penalty to articles that appeared in previous digests."""
+    if not previous_titles:
+        return articles
+
     penalized_count = 0
     for article in articles:
         norm_title = normalize_title(article.get("title", ""))
@@ -380,9 +458,120 @@ def apply_previous_digest_penalty(articles: List[Dict[str, Any]],
             article["quality_score"] = article.get("quality_score", 0) + PENALTY_OLD_REPORT
             article["in_previous_digest"] = True
             penalized_count += 1
-            
+
     logging.info(f"Applied previous digest penalty to {penalized_count} articles")
     return articles
+
+
+# ---------------------------------------------------------------------------
+# Feature 3: User preference profiles
+# ---------------------------------------------------------------------------
+
+def load_preferences(config_dir: Optional[Path]) -> Dict[str, Any]:
+    """Load user preference overrides from workspace config.
+
+    Expected file: <config_dir>/tech-news-digest-preferences.json
+
+    Schema::
+
+        {
+          "keyword_boost": {"Claude": 3, "Ethereum": 2},
+          "source_boost":  {"openai-blog": 5, "sama-twitter": 2},
+          "topic_mute":    ["crypto"],
+          "source_mute":   ["some-source-id"]
+        }
+
+    All keys are optional.  Returns an empty dict if the file is absent.
+    """
+    if not config_dir:
+        return {}
+    prefs_path = config_dir / "tech-news-digest-preferences.json"
+    try:
+        with open(prefs_path, 'r', encoding='utf-8') as f:
+            prefs = json.load(f)
+        logging.info(
+            f"Loaded preferences: "
+            f"{len(prefs.get('keyword_boost', {}))} keyword boosts, "
+            f"{len(prefs.get('source_boost', {}))} source boosts, "
+            f"{len(prefs.get('topic_mute', []))} topic mutes, "
+            f"{len(prefs.get('source_mute', []))} source mutes"
+        )
+        return prefs
+    except FileNotFoundError:
+        return {}
+    except json.JSONDecodeError as e:
+        logging.warning(f"Invalid preferences JSON at {prefs_path}: {e}")
+        return {}
+
+
+def apply_preferences(
+    articles: List[Dict[str, Any]],
+    preferences: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Apply keyword boosts, source boosts, and topic/source mutes.
+
+    Returns a new list; input dicts are not mutated.
+    Muted articles are dropped entirely rather than just penalized.
+    """
+    if not preferences:
+        return articles
+
+    keyword_boost: Dict[str, float] = preferences.get("keyword_boost", {})
+    source_boost: Dict[str, float] = preferences.get("source_boost", {})
+    muted_topics: Set[str] = set(preferences.get("topic_mute", []))
+    muted_sources: Set[str] = set(preferences.get("source_mute", []))
+
+    kept: List[Dict[str, Any]] = []
+    muted_count = 0
+    boosted_count = 0
+
+    for article in articles:
+        # Source mute
+        source_id = article.get("source_id", "")
+        if source_id in muted_sources:
+            muted_count += 1
+            logging.debug(f"Source muted ({source_id}): {article.get('title', '')[:50]}")
+            continue
+
+        # Topic mute: drop only if ALL of the article's topics are muted
+        article_topics = set(article.get("topics", []))
+        primary = article.get("primary_topic", "")
+        if primary:
+            article_topics.add(primary)
+        if muted_topics and article_topics and article_topics.issubset(muted_topics):
+            muted_count += 1
+            logging.debug(f"Topic muted {article_topics}: {article.get('title', '')[:50]}")
+            continue
+
+        # Accumulate boost
+        total_boost: float = source_boost.get(source_id, 0.0)
+        search_text = " ".join(filter(None, [
+            article.get("title", ""),
+            article.get("snippet", ""),
+            article.get("summary", ""),
+            article.get("full_text", ""),
+        ])).lower()
+
+        for keyword, kw_boost in keyword_boost.items():
+            if keyword.lower() in search_text:
+                total_boost += kw_boost
+                logging.debug(
+                    f"Keyword '{keyword}' +{kw_boost}: {article.get('title', '')[:40]}"
+                )
+
+        if total_boost:
+            article = article.copy()
+            article["quality_score"] = article.get("quality_score", 0) + total_boost
+            article["preference_boost"] = round(total_boost, 1)
+            boosted_count += 1
+
+        kept.append(article)
+
+    if muted_count:
+        logging.info(f"Preferences: muted {muted_count} articles")
+    if boosted_count:
+        logging.info(f"Preferences: boosted {boosted_count} articles")
+    return kept
 
 
 def group_by_topics(articles: List[Dict[str, Any]], dedup_across_topics: bool = True) -> Dict[str, List[Dict[str, Any]]]:
@@ -508,13 +697,20 @@ Examples:
         type=Path,
         help="Archive directory for previous digest penalty"
     )
-    
+
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="User config directory containing tech-news-digest-preferences.json (optional)"
+    )
+
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
     )
-    
+
     args = parser.parse_args()
     logger = setup_logging(args.verbose)
     
@@ -627,20 +823,29 @@ Examples:
         total_collected = len(all_articles)
         logger.info(f"Total articles collected: {total_collected}")
         
-        # Load previous digest titles for penalty
-        previous_titles = set()
+        # Load previous digest titles for penalty + developing story detection
+        previous_titles: Dict[str, Dict[str, str]] = {}
         if args.archive_dir:
             previous_titles = load_previous_digests(args.archive_dir)
-        
+
         # Apply previous digest penalty
         all_articles = apply_previous_digest_penalty(all_articles, previous_titles)
-        
+
+        # Load and apply user preference profile (keyword boosts, mutes)
+        if args.config:
+            preferences = load_preferences(args.config)
+            if preferences:
+                all_articles = apply_preferences(all_articles, preferences)
+
         # Merge multi-source articles
         all_articles = merge_article_sources(all_articles)
         logger.info(f"After merging multi-source: {len(all_articles)}")
-        
+
         # Deduplicate articles
         all_articles = deduplicate_articles(all_articles)
+
+        # Tag developing stories (stories continuing from a previous digest)
+        all_articles = tag_developing_stories(all_articles, previous_titles)
         
         # Group by topics (with cross-topic deduplication)
         topic_groups = group_by_topics(all_articles, dedup_across_topics=True)

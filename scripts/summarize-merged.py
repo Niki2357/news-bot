@@ -47,12 +47,18 @@ def summarize(data: dict, top_n: int = 10, topic_filter: str = None):
             qs = a.get("quality_score", 0)
             link = a.get("link") or a.get("reddit_url") or a.get("external_url", "")
             snippet = (a.get("snippet") or a.get("summary") or "")[:150]
-            
+
             # Metrics for Twitter
             metrics = a.get("metrics", {})
             display_name = a.get("display_name", "")
-            
-            print(f"\n  [{i+1}] ({qs:.0f}pts) [{source_type}] {title}")
+
+            # Developing story and preference boost indicators
+            developing = a.get("developing_story")
+            pref_boost = a.get("preference_boost", 0)
+            dev_prefix = "📌 Developing | " if developing else ""
+            boost_tag = f" [+{pref_boost:.0f} pref]" if pref_boost else ""
+
+            print(f"\n  [{i+1}] ({qs:.0f}pts{boost_tag}) [{source_type}] {dev_prefix}{title}")
             print(f"      Source: {source}", end="")
             if display_name:
                 print(f" ({display_name})", end="")
@@ -61,6 +67,10 @@ def summarize(data: dict, top_n: int = 10, topic_filter: str = None):
                 print(f"      Link: {link}")
             if snippet:
                 print(f"      Snippet: {snippet}")
+            if developing:
+                first = developing.get("first_seen_date", "")
+                prev = developing.get("prev_title", "")[:70]
+                print(f"      📌 Continues story from {first}: \"{prev}\"")
             if metrics:
                 parts = []
                 for k, v in metrics.items():

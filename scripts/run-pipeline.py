@@ -234,6 +234,8 @@ def main() -> int:
             merge_args += [flag, str(path)]
     if args.archive_dir:
         merge_args += ["--archive-dir", str(args.archive_dir)]
+    if args.config:
+        merge_args += ["--config", str(args.config)]
     merge_args += ["--output", str(args.output)]
 
     merge_result = run_step("Merge", "merge-sources.py", merge_args, args.output, timeout=60, force=False)
