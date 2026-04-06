@@ -2064,6 +2064,94 @@
       ],
       "priority": false,
       "enabled": true
+    },
+    {
+      "id": "bbc-world-rss",
+      "type": "rss",
+      "name": "BBC World News",
+      "url": "http://feeds.bbci.co.uk/news/world/rss.xml",
+      "topics": [
+        "global-news"
+      ],
+      "priority": true,
+      "enabled": true
+    },
+    {
+      "id": "guardian-world-rss",
+      "type": "rss",
+      "name": "The Guardian World",
+      "url": "https://www.theguardian.com/world/rss",
+      "topics": [
+        "global-news"
+      ],
+      "priority": true,
+      "enabled": true
+    },
+    {
+      "id": "npr-news-rss",
+      "type": "rss",
+      "name": "NPR News",
+      "url": "https://feeds.npr.org/1001/rss.xml",
+      "topics": [
+        "global-news"
+      ],
+      "priority": true,
+      "enabled": true
+    },
+    {
+      "id": "reuters-world-rss",
+      "type": "rss",
+      "name": "Reuters World News",
+      "url": "https://feeds.reuters.com/Reuters/worldNews",
+      "topics": [
+        "global-news"
+      ],
+      "priority": true,
+      "enabled": true
+    },
+    {
+      "id": "hackernews-rss",
+      "type": "rss",
+      "name": "Hacker News",
+      "url": "https://news.ycombinator.com/rss",
+      "topics": [
+        "hacker-news"
+      ],
+      "priority": true,
+      "enabled": true
+    },
+    {
+      "id": "theverge-rss",
+      "type": "rss",
+      "name": "The Verge",
+      "url": "https://www.theverge.com/rss/index.xml",
+      "topics": [
+        "tech-news"
+      ],
+      "priority": true,
+      "enabled": true
+    },
+    {
+      "id": "arstechnica-rss",
+      "type": "rss",
+      "name": "Ars Technica",
+      "url": "https://feeds.arstechnica.com/arstechnica/index",
+      "topics": [
+        "tech-news"
+      ],
+      "priority": true,
+      "enabled": true
+    },
+    {
+      "id": "mit-techreview-rss",
+      "type": "rss",
+      "name": "MIT Technology Review",
+      "url": "https://www.technologyreview.com/feed/",
+      "topics": [
+        "tech-news"
+      ],
+      "priority": true,
+      "enabled": true
     }
   ]
 }
